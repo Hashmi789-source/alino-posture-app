@@ -5,6 +5,7 @@ import { ZodError } from "zod";
 import { AppError } from "./services/auth.service";
 import authRoutes from "./routes/auth.routes";
 import calibrationRoutes from "./routes/calibration.routes";
+import deviceSettingsRoutes from "./routes/deviceSettings.routes";
 import deviceRoutes from "./routes/device.routes";
 import healthRoutes from "./routes/health.routes";
 import postureReadingRoutes from "./routes/postureReading.routes";
@@ -17,6 +18,7 @@ app.use(express.json());
 
 app.use("/api/auth", authRoutes);
 app.use("/api/calibrations", calibrationRoutes);
+app.use("/api/device-settings", deviceSettingsRoutes);
 app.use("/api/devices", deviceRoutes);
 app.use("/api/health", healthRoutes);
 app.use("/api/posture-readings", postureReadingRoutes);
