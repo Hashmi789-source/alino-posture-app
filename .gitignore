@@ -8,3 +8,4 @@ backend/.env
 
 .agents
 .npm-cache
+*.tsbuildinfo
