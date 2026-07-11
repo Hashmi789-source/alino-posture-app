@@ -3,7 +3,7 @@ import { AuthenticatedRequest } from "../middleware/auth.middleware";
 import { AppError } from "../services/auth.service";
 import { deviceSettingsService } from "../services/deviceSettings.service";
 import {
-  createOrUpdateDeviceSettingsSchema,
+  createDeviceSettingsSchema,
   deviceSettingsDeviceIdParamsSchema,
   updateDeviceSettingsSchema,
 } from "../validators/deviceSettings.validator";
@@ -20,8 +20,8 @@ export const deviceSettingsController = {
   async save(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const userId = getAuthenticatedUserId(req);
-      const input = createOrUpdateDeviceSettingsSchema.parse(req.body);
-      const settings = await deviceSettingsService.createOrUpdateSettings(userId, input);
+      const input = createDeviceSettingsSchema.parse(req.body);
+      const settings = await deviceSettingsService.saveSettings(userId, input);
 
       res.status(200).json({
         success: true,
@@ -35,7 +35,7 @@ export const deviceSettingsController = {
     }
   },
 
-  async getByDevice(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  async get(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const userId = getAuthenticatedUserId(req);
       const { deviceId } = deviceSettingsDeviceIdParamsSchema.parse(req.params);
