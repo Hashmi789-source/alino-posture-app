@@ -1,7 +1,7 @@
 import { supabase } from "../config/supabase";
 import { AppError } from "./auth.service";
 import {
-  CreateOrUpdateDeviceSettingsInput,
+  CreateDeviceSettingsInput,
   UpdateDeviceSettingsInput,
 } from "../validators/deviceSettings.validator";
 
@@ -17,10 +17,6 @@ type DeviceSettingsRow = {
   updated_at: string;
 };
 
-type DeviceSettingsUpdate = Partial<
-  Pick<DeviceSettingsRow, "sensitivity" | "threshold_angle" | "vibration_delay_seconds" | "vibration_enabled">
->;
-
 const deviceSettingsColumns =
   "id, user_id, device_id, sensitivity, threshold_angle, vibration_delay_seconds, vibration_enabled, created_at, updated_at";
 
@@ -31,18 +27,6 @@ const requireSupabase = () => {
 
   return supabase;
 };
-
-const toDeviceSettingsResponse = (settings: DeviceSettingsRow) => ({
-  id: settings.id,
-  userId: settings.user_id,
-  deviceId: settings.device_id,
-  sensitivity: settings.sensitivity,
-  thresholdAngle: settings.threshold_angle,
-  vibrationDelaySeconds: settings.vibration_delay_seconds,
-  vibrationEnabled: settings.vibration_enabled,
-  createdAt: settings.created_at,
-  updatedAt: settings.updated_at,
-});
 
 const verifyDeviceOwnership = async (userId: string, deviceId: string) => {
   const db = requireSupabase();
@@ -63,8 +47,24 @@ const verifyDeviceOwnership = async (userId: string, deviceId: string) => {
   }
 };
 
-const buildDeviceSettingsUpdate = (input: UpdateDeviceSettingsInput): DeviceSettingsUpdate => {
-  const update: DeviceSettingsUpdate = {};
+const toDeviceSettingsResponse = (settings: DeviceSettingsRow) => ({
+  id: settings.id,
+  userId: settings.user_id,
+  deviceId: settings.device_id,
+  sensitivity: settings.sensitivity,
+  thresholdAngle: settings.threshold_angle,
+  vibrationDelaySeconds: settings.vibration_delay_seconds,
+  vibrationEnabled: settings.vibration_enabled,
+  createdAt: settings.created_at,
+  updatedAt: settings.updated_at,
+});
+
+const buildSettingsUpdate = (input: UpdateDeviceSettingsInput) => {
+  const update: Partial<
+    Pick<DeviceSettingsRow, "sensitivity" | "threshold_angle" | "vibration_delay_seconds" | "vibration_enabled">
+  > & { updated_at: string } = {
+    updated_at: new Date().toISOString(),
+  };
 
   if (input.sensitivity !== undefined) {
     update.sensitivity = input.sensitivity;
@@ -86,7 +86,7 @@ const buildDeviceSettingsUpdate = (input: UpdateDeviceSettingsInput): DeviceSett
 };
 
 export const deviceSettingsService = {
-  async createOrUpdateSettings(userId: string, input: CreateOrUpdateDeviceSettingsInput) {
+  async saveSettings(userId: string, input: CreateDeviceSettingsInput) {
     const db = requireSupabase();
 
     await verifyDeviceOwnership(userId, input.deviceId);
@@ -147,10 +147,7 @@ export const deviceSettingsService = {
 
     const { data: settings, error } = await db
       .from("device_settings")
-      .update({
-        ...buildDeviceSettingsUpdate(input),
-        updated_at: new Date().toISOString(),
-      })
+      .update(buildSettingsUpdate(input))
       .eq("user_id", userId)
       .eq("device_id", deviceId)
       .select(deviceSettingsColumns)

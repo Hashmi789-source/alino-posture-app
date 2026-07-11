@@ -7,7 +7,7 @@ const router = Router();
 router.use(authMiddleware);
 
 router.post("/", deviceSettingsController.save);
-router.get("/:deviceId", deviceSettingsController.getByDevice);
+router.get("/:deviceId", deviceSettingsController.get);
 router.patch("/:deviceId", deviceSettingsController.update);
 
 export default router;
