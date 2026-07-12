@@ -233,6 +233,12 @@ h1, h2, h3, p {
   color: var(--text-muted);
 }
 
+.field-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 /* Simple labeled inputs for inner pages */
 .simple-label {
   display: grid;
@@ -325,55 +331,6 @@ h1, h2, h3, p {
 
 .btn-icon:hover {
   background: var(--brand-glow);
-}
-
-/* ── Social login ── */
-.divider-text {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--text-muted);
-  font-size: 13px;
-  margin: 4px 0;
-}
-
-.divider-text::before,
-.divider-text::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--border);
-}
-
-.social-buttons {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-
-.social-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  height: 48px;
-  background: var(--surface);
-  border: 1.5px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-  cursor: pointer;
-  transition: background var(--transition);
-}
-
-.social-btn:hover {
-  background: var(--surface-muted);
-}
-
-.social-btn svg {
-  width: 20px;
-  height: 20px;
 }
 
 /* ── Auth footer ── */

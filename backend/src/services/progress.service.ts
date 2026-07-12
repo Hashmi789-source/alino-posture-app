@@ -165,6 +165,7 @@ export const progressService = {
       month: toMonthKey(start),
       deviceId,
       monthlyAverageScore: monthlySummary.postureScore,
+      averageAngle: monthlySummary.averageAngle,
       totalReadings: monthlySummary.totalReadings,
       goodReadings: monthlySummary.goodReadings,
       wrongReadings: monthlySummary.wrongReadings,
