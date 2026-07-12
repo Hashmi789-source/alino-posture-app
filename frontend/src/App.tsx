@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
   Activity,
@@ -43,6 +43,20 @@ import {
 } from "./api/apiClient";
 
 const ACTIVE_DEVICE_KEY = "alino_active_device_id";
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize(options: { client_id: string; callback: (response: { credential: string }) => void }): void;
+          renderButton(element: HTMLElement, options: Record<string, string | number>): void;
+        };
+      };
+    };
+  }
+}
 
 type AppNotice = {
   type: "success" | "error" | "info";
@@ -81,6 +95,49 @@ function Notice({ notice }: { notice: AppNotice | null }) {
   }
 
   return <div className={`notice ${notice.type}`}>{notice.message}</div>;
+}
+
+function GoogleSignInButton({ onCredential }: { onCredential: (credential: string) => void }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID || !containerRef.current) return;
+
+    const render = () => {
+      if (!window.google || !containerRef.current) return;
+      containerRef.current.replaceChildren();
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: ({ credential }) => onCredential(credential),
+      });
+      window.google.accounts.id.renderButton(containerRef.current, {
+        type: "standard",
+        theme: "outline",
+        size: "large",
+        text: "continue_with",
+        shape: "rectangular",
+        width: 320,
+      });
+    };
+
+    const existing = document.querySelector<HTMLScriptElement>('script[src="https://accounts.google.com/gsi/client"]');
+    if (existing) {
+      if (window.google) render();
+      else existing.addEventListener("load", render, { once: true });
+      return () => existing.removeEventListener("load", render);
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.addEventListener("load", render, { once: true });
+    document.head.appendChild(script);
+    return () => script.removeEventListener("load", render);
+  }, [onCredential]);
+
+  if (!GOOGLE_CLIENT_ID) return null;
+  return <div className="google-button" ref={containerRef} />;
 }
 
 /* ── Yoga / Meditation SVG Icon ── */
@@ -142,6 +199,14 @@ function AuthScreen({
     });
   };
 
+  const handleGoogleCredential = (credential: string) => {
+    run(async () => {
+      const result = await api.auth.google(credential);
+      onAuth(result.user, result.token);
+      navigate("/dashboard");
+    });
+  };
+
   return (
     <main className="auth-page">
       {/* Brand header */}
@@ -185,7 +250,6 @@ function AuthScreen({
                 name="email"
                 type="email"
                 placeholder="sarah@example.com"
-                defaultValue="sarah@example.com"
                 required
               />
             </div>
@@ -202,7 +266,6 @@ function AuthScreen({
                 name="password"
                 type="password"
                 placeholder="••••••••"
-                defaultValue="password123"
                 minLength={8}
                 required
               />
@@ -214,6 +277,13 @@ function AuthScreen({
           </button>
         </form>
 
+        {GOOGLE_CLIENT_ID && (
+          <>
+            <div className="auth-divider"><span>or</span></div>
+            <GoogleSignInButton onCredential={handleGoogleCredential} />
+          </>
+        )}
+
         <p className="auth-switch">
           {isRegister ? "Already have an account? " : "Don't have an account? "}
           <Link to={isRegister ? "/login" : "/register"}>
@@ -221,9 +291,6 @@ function AuthScreen({
           </Link>
         </p>
 
-        <div className="demo-hint">
-          <strong>Tip:</strong> Use a registered email and password to sync with the backend.
-        </div>
       </section>
     </main>
   );

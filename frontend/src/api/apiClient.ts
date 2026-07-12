@@ -127,6 +127,11 @@ async function request<T>(path: string, options: RequestInit = {}) {
     return payload.data as T;
   } catch (error) {
     console.warn("Backend request failed:", path, error);
+    if (error instanceof TypeError) {
+      throw new Error(
+        `Cannot reach the backend at ${API_BASE_URL}. Start the backend server or set VITE_API_BASE_URL correctly.`,
+      );
+    }
     throw error;
   }
 }
@@ -143,6 +148,12 @@ export const api = {
       return request<{ user: ApiUser; token: string }>("/auth/login", {
         method: "POST",
         body: JSON.stringify(input),
+      });
+    },
+    async google(credential: string) {
+      return request<{ user: ApiUser; token: string }>("/auth/google", {
+        method: "POST",
+        body: JSON.stringify({ credential }),
       });
     },
     async me() {

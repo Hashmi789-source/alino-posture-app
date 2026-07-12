@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import { AuthenticatedRequest } from "../middleware/auth.middleware";
 import { authService } from "../services/auth.service";
-import { loginSchema, registerSchema } from "../validators/auth.validator";
+import { googleLoginSchema, loginSchema, registerSchema } from "../validators/auth.validator";
 
 export const authController = {
   async register(req: Request, res: Response, next: NextFunction) {
@@ -27,6 +27,21 @@ export const authController = {
       res.status(200).json({
         success: true,
         message: "User logged in successfully",
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async google(req: Request, res: Response, next: NextFunction) {
+    try {
+      const input = googleLoginSchema.parse(req.body);
+      const result = await authService.loginWithGoogle(input);
+
+      res.status(200).json({
+        success: true,
+        message: "User signed in with Google successfully",
         data: result,
       });
     } catch (error) {

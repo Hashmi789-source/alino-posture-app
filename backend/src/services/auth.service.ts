@@ -1,7 +1,9 @@
 import bcrypt from "bcryptjs";
 import jwt, { SignOptions } from "jsonwebtoken";
+import { OAuth2Client } from "google-auth-library";
+import crypto from "node:crypto";
 import { supabase } from "../config/supabase";
-import { LoginInput, RegisterInput } from "../validators/auth.validator";
+import { GoogleLoginInput, LoginInput, RegisterInput } from "../validators/auth.validator";
 
 export type AuthUser = {
   id: string;
@@ -25,6 +27,7 @@ export class AppError extends Error {
 }
 
 const publicUserColumns = "id, name, email, created_at";
+const googleClient = new OAuth2Client();
 
 const requireSupabase = () => {
   if (!supabase) {
@@ -130,6 +133,56 @@ export const authService = {
     const token = createToken(user);
 
     return { user, token };
+  },
+
+  async loginWithGoogle(input: GoogleLoginInput) {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (!clientId) {
+      throw new AppError("Google sign-in is not configured", 503);
+    }
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken: input.credential,
+      audience: clientId,
+    });
+    const payload = ticket.getPayload();
+
+    if (!payload?.email || !payload.email_verified) {
+      throw new AppError("Google account email could not be verified", 401);
+    }
+
+    const db = requireSupabase();
+    const email = payload.email.toLowerCase();
+    const { data: existingUser, error: lookupError } = await db
+      .from("users")
+      .select(publicUserColumns)
+      .eq("email", email)
+      .maybeSingle();
+
+    if (lookupError) {
+      throw new AppError(lookupError.message, 500);
+    }
+
+    let user = existingUser as AuthUser | null;
+    if (!user) {
+      const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
+      const { data: createdUser, error: createError } = await db
+        .from("users")
+        .insert({
+          name: payload.name?.trim() || email.split("@")[0],
+          email,
+          password_hash: passwordHash,
+        })
+        .select(publicUserColumns)
+        .single();
+
+      if (createError || !createdUser) {
+        throw new AppError(createError?.message || "Could not create Google user", 500);
+      }
+      user = createdUser as AuthUser;
+    }
+
+    return { user, token: createToken(user) };
   },
 
   async getUserById(userId: string) {
