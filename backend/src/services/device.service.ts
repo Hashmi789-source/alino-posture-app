@@ -52,6 +52,36 @@ export const deviceService = {
   async createDevice(userId: string, input: CreateDeviceInput) {
     const db = requireSupabase();
 
+    const { data: existingDevice, error: lookupError } = await db
+      .from("devices")
+      .select(deviceColumns)
+      .eq("device_uid", input.deviceUid)
+      .maybeSingle();
+
+    if (lookupError) {
+      throw new AppError(lookupError.message, 500);
+    }
+
+    if (existingDevice) {
+      if (existingDevice.user_id !== userId) {
+        throw new AppError("This Alino device is already connected to another account", 409);
+      }
+
+      const { data: updatedDevice, error: updateError } = await db
+        .from("devices")
+        .update({ device_name: input.deviceName, device_ip: input.deviceIp })
+        .eq("id", existingDevice.id)
+        .eq("user_id", userId)
+        .select(deviceColumns)
+        .single();
+
+      if (updateError || !updatedDevice) {
+        throw new AppError(updateError?.message || "Could not reconnect device", 500);
+      }
+
+      return toDeviceResponse(updatedDevice);
+    }
+
     const { data: device, error } = await db
       .from("devices")
       .insert({

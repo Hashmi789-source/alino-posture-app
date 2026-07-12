@@ -76,7 +76,23 @@ type ApiResponse<T> = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api";
+const ALINO_DEVICE_URL = "http://192.168.4.1";
 const TOKEN_KEY = "alino_auth_token";
+
+export type AlinoDeviceInfo = {
+  deviceUid: string;
+  deviceName: string;
+  firmwareVersion: string;
+  sensorReady: boolean;
+  calibrated: boolean;
+};
+
+export type AlinoCalibrationResult = {
+  success: boolean;
+  baselineAngle: number;
+  thresholdAngle: number;
+  message: string;
+};
 
 export const tokenStore = {
   get() {
@@ -135,6 +151,35 @@ async function request<T>(path: string, options: RequestInit = {}) {
     throw error;
   }
 }
+
+async function requestDevice<T>(path: string, options: RequestInit = {}) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const response = await fetch(`${ALINO_DEVICE_URL}${path}`, {
+      ...options,
+      headers: { "Content-Type": "application/json", ...options.headers },
+      signal: controller.signal,
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || "Alino device request failed");
+    return payload as T;
+  } catch {
+    throw new Error("Unable to reach your Alino device. Please connect your phone to the Alino Wi-Fi and try again.");
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+export const alinoDevice = {
+  info() {
+    return requestDevice<AlinoDeviceInfo>("/api/device/info");
+  },
+  calibrate() {
+    return requestDevice<AlinoCalibrationResult>("/api/calibrate", { method: "POST" });
+  },
+};
 
 export const api = {
   auth: {

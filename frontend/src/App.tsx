@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Gauge,
   HelpCircle,
+  LoaderCircle,
   Lock,
   LogOut,
   Mail,
@@ -18,6 +19,7 @@ import {
   Target,
   User,
   Vibrate,
+  Wifi,
 } from "lucide-react";
 import {
   Bar,
@@ -31,6 +33,7 @@ import {
   YAxis,
 } from "recharts";
 import {
+  alinoDevice,
   api,
   ApiUser,
   Calibration,
@@ -140,16 +143,8 @@ function GoogleSignInButton({ onCredential }: { onCredential: (credential: strin
   return <div className="google-button" ref={containerRef} />;
 }
 
-/* ── Yoga / Meditation SVG Icon ── */
-function YogaIcon({ size = 28 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="4" r="2" />
-      <path d="M12 6v4" />
-      <path d="M8 14l4-4 4 4" />
-      <path d="M6 18l6-4 6 4" />
-    </svg>
-  );
+function BrandLogo({ className = "" }: { className?: string }) {
+  return <img className={`brand-logo ${className}`} src="/assets/alino-logo.png" alt="Alino" />;
 }
 
 function EmptyState({ title, body }: { title: string; body: string }) {
@@ -211,10 +206,7 @@ function AuthScreen({
     <main className="auth-page">
       {/* Brand header */}
       <div className="auth-brand">
-        <div className="brand-icon">
-          <YogaIcon size={32} />
-        </div>
-        <h1>Alino</h1>
+        <BrandLogo className="auth-logo" />
         <p>Precision posture & wellness</p>
       </div>
 
@@ -337,10 +329,7 @@ function ProtectedLayout({
       <header className="topbar">
         <div className="topbar-left">
           <Link className="topbar-brand" to="/dashboard">
-            <span className="brand-icon-sm">
-              <YogaIcon size={18} />
-            </span>
-            <span>Alino</span>
+            <BrandLogo className="topbar-logo" />
           </Link>
         </div>
         <div className="topbar-right">
@@ -525,59 +514,59 @@ function DeviceSetup({
   onRefresh: () => Promise<void>;
   onSelectDevice: (deviceId: string) => void;
 }) {
-  const { notice, run } = useNotice();
+  const { notice, setNotice } = useNotice();
+  const [connecting, setConnecting] = useState(false);
 
-  const handleCreate = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
+  const handleConnect = async () => {
+    setConnecting(true);
+    setNotice({ type: "info", message: "Looking for your Alino device..." });
 
-    run(async () => {
+    try {
+      const deviceInfo = await alinoDevice.info();
+      if (!deviceInfo.sensorReady) {
+        throw new Error("Your Alino sensor is not ready. Restart the device and try again.");
+      }
+
       const result = await api.devices.create({
-        deviceName: textValue(form.get("deviceName")),
-        deviceUid: textValue(form.get("deviceUid")),
-        deviceIp: textValue(form.get("deviceIp")),
+        deviceName: deviceInfo.deviceName,
+        deviceUid: deviceInfo.deviceUid,
+        deviceIp: "192.168.4.1",
       });
       await onRefresh();
       onSelectDevice(result.device.id);
-      event.currentTarget.reset();
-    }, "Device registered successfully");
+      setNotice({ type: "success", message: "Alino device connected successfully" });
+    } catch (error) {
+      setNotice({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unable to connect your Alino device. Please try again.",
+      });
+    } finally {
+      setConnecting(false);
+    }
   };
 
   return (
     <section className="page-grid">
       <div className="page-header">
         <p className="eyebrow">Devices</p>
-        <h1>Manage Devices</h1>
+        <h1>Connect Your Alino</h1>
       </div>
 
       <Notice notice={notice} />
 
-      {/* Add device */}
-      <div className="card">
-        <h3>Add Device</h3>
-        <form className="form-grid" onSubmit={handleCreate}>
-          <label className="simple-label">
-            Device name
-            <input className="simple-input" name="deviceName" placeholder="Alino Device 01" required />
-          </label>
-          <label className="simple-label">
-            Device UID
-            <input className="simple-input" name="deviceUid" placeholder="ESP32_001" required />
-          </label>
-          <label className="simple-label">
-            Device IP
-            <input className="simple-input" name="deviceIp" placeholder="192.168.4.1" required />
-          </label>
-          <button className="btn-primary" type="submit">
-            <Plus size={18} />
-            Add device
-          </button>
-        </form>
+      <div className="card connect-card">
+        <div className="connect-icon"><Wifi size={28} /></div>
+        <h3>Connect Device</h3>
+        <p>Turn on your Alino, then connect your phone to the Alino Wi-Fi network.</p>
+        <button className="btn-primary" type="button" onClick={handleConnect} disabled={connecting}>
+          {connecting ? <LoaderCircle className="spin" size={18} /> : <Smartphone size={18} />}
+          {connecting ? "Connecting..." : "Connect Device"}
+        </button>
       </div>
 
       {/* Device list */}
       <div className="card">
-        <h3>Registered Devices</h3>
+        <h3>Your Devices</h3>
         <div className="device-list">
           {devices.map((device) => (
             <button
@@ -588,9 +577,11 @@ function DeviceSetup({
             >
               <span className="device-info">
                 <span className="device-name">{device.deviceName}</span>
-                <span className="device-uid">{device.deviceUid}</span>
+                <span className="device-friendly-status">
+                  {device.id === activeDeviceId ? "Connected and selected" : "Tap to select"}
+                </span>
               </span>
-              <span className="device-ip">{device.deviceIp}</span>
+              {device.id === activeDeviceId && <CheckCircle2 size={20} />}
             </button>
           ))}
           {devices.length === 0 && <p style={{ color: "var(--text-muted)", fontSize: 14 }}>No devices registered yet.</p>}
@@ -604,8 +595,9 @@ function DeviceSetup({
    CALIBRATION
    ══════════════════════════════════════════════════ */
 function CalibrationScreen({ activeDevice }: { activeDevice?: Device }) {
-  const { notice, run } = useNotice();
+  const { notice, setNotice } = useNotice();
   const [activeCalibration, setActiveCalibration] = useState<Calibration | null>(null);
+  const [calibrating, setCalibrating] = useState(false);
 
   const loadActiveCalibration = async () => {
     if (!activeDevice) {
@@ -624,52 +616,57 @@ function CalibrationScreen({ activeDevice }: { activeDevice?: Device }) {
     loadActiveCalibration();
   }, [activeDevice?.id]);
 
-  const handleCreate = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!activeDevice) {
-      return;
-    }
-    const form = new FormData(event.currentTarget);
+  const handleCalibrate = async () => {
+    if (!activeDevice || calibrating) return;
+    setCalibrating(true);
+    setNotice({ type: "info", message: "Calibrating..." });
 
-    run(async () => {
+    try {
+      const deviceCalibration = await alinoDevice.calibrate();
+      if (!deviceCalibration.success) throw new Error(deviceCalibration.message);
+
       const result = await api.calibrations.create({
         deviceId: activeDevice.id,
-        baselineAngle: numberValue(form.get("baselineAngle")),
-        thresholdAngle: numberValue(form.get("thresholdAngle")),
+        baselineAngle: deviceCalibration.baselineAngle,
+        thresholdAngle: deviceCalibration.thresholdAngle,
       });
       setActiveCalibration(result.calibration);
-    }, "Calibration saved successfully");
+      setNotice({ type: "success", message: "Calibration completed successfully" });
+    } catch {
+      setNotice({
+        type: "error",
+        message: "Unable to calibrate. Please connect your phone to the Alino Wi-Fi and try again.",
+      });
+    } finally {
+      setCalibrating(false);
+    }
   };
 
   if (!activeDevice) {
-    return <EmptyState title="Select a device" body="Calibration is saved per device." />;
+    return <EmptyState title="Connect a device first" body="Connect and select your Alino before calibration." />;
   }
 
   return (
     <section className="page-grid">
       <div className="page-header">
         <p className="eyebrow">Calibration</p>
-        <h1>Posture Baseline</h1>
+        <h1>Calibrate Your Posture</h1>
       </div>
 
       <Notice notice={notice} />
 
       <div className="card">
-        <h3>New Calibration</h3>
-        <form className="form-grid" onSubmit={handleCreate}>
-          <label className="simple-label">
-            Baseline angle
-            <input className="simple-input" name="baselineAngle" type="number" step="0.1" placeholder="8.5" required />
-          </label>
-          <label className="simple-label">
-            Threshold angle
-            <input className="simple-input" name="thresholdAngle" type="number" step="0.1" defaultValue={12} required />
-          </label>
-          <button className="btn-primary" type="submit">
-            <Target size={18} />
-            Save calibration
-          </button>
-        </form>
+        <h3>Before you calibrate</h3>
+        <ol className="calibration-steps">
+          <li>Clip the device correctly.</li>
+          <li>Sit in your correct posture.</li>
+          <li>Stay still for a few seconds.</li>
+          <li>Tap Calibrate.</li>
+        </ol>
+        <button className="btn-primary" type="button" onClick={handleCalibrate} disabled={calibrating}>
+          {calibrating ? <LoaderCircle className="spin" size={18} /> : <Target size={18} />}
+          {calibrating ? "Calibrating..." : "Calibrate"}
+        </button>
       </div>
 
       <div className="card">
@@ -1197,9 +1194,7 @@ export default function App() {
   if (booting) {
     return (
       <main className="boot-screen">
-        <div className="brand-icon">
-          <YogaIcon size={32} />
-        </div>
+        <BrandLogo className="boot-logo" />
         <span>Loading Alino</span>
       </main>
     );
