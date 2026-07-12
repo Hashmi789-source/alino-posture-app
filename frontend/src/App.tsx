@@ -219,7 +219,12 @@ function AuthScreen({
 
         <Notice notice={notice} />
 
-        <form className="form-stack" onSubmit={handleSubmit}>
+        <form
+          key={mode}
+          className="form-stack"
+          autoComplete={isRegister ? "off" : "on"}
+          onSubmit={handleSubmit}
+        >
           {isRegister && (
             <div className="field-group">
               <div className="field-label">
@@ -227,7 +232,15 @@ function AuthScreen({
               </div>
               <div className="input-wrapper">
                 <User size={18} className="input-icon" />
-                <input name="name" type="text" placeholder="Your full name" minLength={2} required />
+                <input
+                  name="name"
+                  type="text"
+                  placeholder="Your full name"
+                  autoComplete="off"
+                  defaultValue=""
+                  minLength={2}
+                  required
+                />
               </div>
             </div>
           )}
@@ -241,7 +254,9 @@ function AuthScreen({
               <input
                 name="email"
                 type="email"
-                placeholder="sarah@example.com"
+                placeholder="you@example.com"
+                autoComplete={isRegister ? "off" : "email"}
+                defaultValue=""
                 required
               />
             </div>
@@ -257,6 +272,8 @@ function AuthScreen({
               <input
                 name="password"
                 type="password"
+                autoComplete={isRegister ? "new-password" : "current-password"}
+                defaultValue=""
                 placeholder="••••••••"
                 minLength={8}
                 required
