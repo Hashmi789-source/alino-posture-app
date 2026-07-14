@@ -3,6 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-r
 import {
   Activity,
   BarChart3,
+  Bluetooth,
   CalendarDays,
   CheckCircle2,
   Gauge,
@@ -35,6 +36,8 @@ import {
 import {
   alinoDevice,
   api,
+  setAlinoDeviceUrl,
+  AlinoDeviceInfo,
   ApiUser,
   Calibration,
   Device,
@@ -394,30 +397,17 @@ function ProtectedLayout({
 /* ══════════════════════════════════════════════════
    DASHBOARD
    ══════════════════════════════════════════════════ */
-function Dashboard({ devices, activeDevice }: { devices: Device[]; activeDevice?: Device }) {
-  const { notice, setNotice } = useNotice();
-  const [latest, setLatest] = useState<PostureReading | null>(null);
-  const [progress, setProgress] = useState<ProgressSummary | null>(null);
-
-  useEffect(() => {
-    if (!activeDevice) {
-      return;
-    }
-
-    Promise.allSettled([api.readings.latest(activeDevice.id), api.progress.daily(activeDevice.id, todayKey())]).then(
-      ([latestResult, progressResult]) => {
-        if (latestResult.status === "fulfilled") {
-          setLatest(latestResult.value.reading);
-        }
-        if (progressResult.status === "fulfilled") {
-          setProgress(progressResult.value.progress);
-        }
-        if (latestResult.status === "rejected" && progressResult.status === "rejected") {
-          setNotice({ type: "info", message: "Add posture readings to see live dashboard data." });
-        }
-      },
-    );
-  }, [activeDevice, setNotice]);
+function Dashboard({
+  devices,
+  activeDevice,
+  latestReading,
+  progressSummary,
+}: {
+  devices: Device[];
+  activeDevice?: Device;
+  latestReading: PostureReading | null;
+  progressSummary: ProgressSummary | null;
+}) {
 
   return (
     <section className="page-grid">
@@ -426,20 +416,18 @@ function Dashboard({ devices, activeDevice }: { devices: Device[]; activeDevice?
         <h1>Posture Overview</h1>
       </div>
 
-      <Notice notice={notice} />
-
       {/* Metric cards */}
       <div className="metric-row">
         <MetricCard label="Devices" value={String(devices.length)} accent="teal" />
-        <MetricCard label="Latest Angle" value={latest ? `${latest.angle}°` : "—"} accent="gray" />
+        <MetricCard label="Latest Angle" value={latestReading ? `${latestReading.angle}°` : "—"} accent="gray" />
         <MetricCard
           label="Today Score"
-          value={progress ? `${progress.postureScore ?? 0}%` : "—"}
-          accent={progress && (progress.postureScore ?? 0) >= 70 ? "green" : "orange"}
+          value={progressSummary ? `${progressSummary.postureScore ?? 0}%` : "—"}
+          accent={progressSummary && (progressSummary.postureScore ?? 0) >= 70 ? "green" : "orange"}
         />
         <MetricCard
           label="Readings"
-          value={progress ? String(progress.totalReadings) : "—"}
+          value={progressSummary ? String(progressSummary.totalReadings) : "—"}
           accent="teal"
         />
       </div>
@@ -449,8 +437,8 @@ function Dashboard({ devices, activeDevice }: { devices: Device[]; activeDevice?
           {/* Posture status */}
           <div className="card">
             <h3>Current Posture</h3>
-            {latest ? (
-              <PostureStatusDisplay reading={latest} />
+            {latestReading ? (
+              <PostureStatusDisplay reading={latestReading} />
             ) : (
               <p style={{ color: "var(--text-muted)", textAlign: "center", padding: "24px 0" }}>
                 No reading has been saved yet.
@@ -533,12 +521,20 @@ function DeviceSetup({
 }) {
   const { notice, setNotice } = useNotice();
   const [connecting, setConnecting] = useState(false);
+  const [pairing, setPairing] = useState(false);
+  const [motorTesting, setMotorTesting] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [ssid, setSsid] = useState("");
+  const [password, setPassword] = useState("");
+  const [apiHost, setApiHost] = useState("");
+  const [deviceIp, setDeviceIp] = useState("192.168.4.1");
 
   const handleConnect = async () => {
     setConnecting(true);
     setNotice({ type: "info", message: "Looking for your Alino device..." });
 
     try {
+      setAlinoDeviceUrl(deviceIp);
       const deviceInfo = await alinoDevice.info();
       if (!deviceInfo.sensorReady) {
         throw new Error("Your Alino sensor is not ready. Restart the device and try again.");
@@ -547,7 +543,7 @@ function DeviceSetup({
       const result = await api.devices.create({
         deviceName: deviceInfo.deviceName,
         deviceUid: deviceInfo.deviceUid,
-        deviceIp: "192.168.4.1",
+        deviceIp: deviceIp,
       });
       await onRefresh();
       onSelectDevice(result.device.id);
@@ -559,6 +555,113 @@ function DeviceSetup({
       });
     } finally {
       setConnecting(false);
+    }
+  };
+
+  const handlePairViaBluetooth = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const bluetoothApi = navigator as Navigator & {
+      bluetooth?: {
+        requestDevice(options: {
+          filters?: Array<{ namePrefix?: string }>;
+          optionalServices?: string[];
+        }): Promise<any>;
+      };
+    };
+
+    if (!bluetoothApi.bluetooth) {
+      setNotice({ type: "error", message: "Web Bluetooth is not supported in this browser." });
+      return;
+    }
+
+    const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+    const PROVISION_CHAR_UUID = "beb5483e-36e7-4688-bc5e-8f4f4f4f4f4f";
+    const IP_CHAR_UUID = "0d6a1b2e-7f0e-4a2a-9f0a-6b0f7e9c2a10";
+
+    setPairing(true);
+    setNotice({ type: "info", message: "Searching for your Alino device over Bluetooth..." });
+
+    try {
+      const device = await bluetoothApi.bluetooth.requestDevice({
+        filters: [{ namePrefix: "PosturePro-" }],
+        optionalServices: [SERVICE_UUID],
+      });
+      const server = await device.gatt?.connect();
+      if (!server) {
+        throw new Error("Bluetooth GATT server was not available.");
+      }
+
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      const characteristic = await service.getCharacteristic(PROVISION_CHAR_UUID);
+      const payload = JSON.stringify(apiHost.trim() ? { ssid, password, apiHost: apiHost.trim() } : { ssid, password });
+      await characteristic.writeValue(new TextEncoder().encode(payload));
+
+      setNotice({
+        type: "info",
+        message: "Credentials sent. Waiting for the device to reconnect to Wi-Fi so we can fetch its IP address...",
+      });
+
+      // The device restarts to apply new Wi-Fi credentials, which drops this
+      // BLE connection. Reconnect (no new picker needed, permission is
+      // already granted) and poll the IP characteristic until it reports a
+      // real address, so the person never has to type it in manually.
+      let fetchedIp = "";
+      for (let attempt = 0; attempt < 20 && !fetchedIp; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        try {
+          const reconnectedServer = device.gatt?.connected ? device.gatt : await device.gatt?.connect();
+          if (!reconnectedServer) continue;
+          const reconnectedService = await reconnectedServer.getPrimaryService(SERVICE_UUID);
+          const ipCharacteristic = await reconnectedService.getCharacteristic(IP_CHAR_UUID);
+          const value = await ipCharacteristic.readValue();
+          const ipText = new TextDecoder().decode(value).trim();
+          if (/^\d+\.\d+\.\d+\.\d+$/.test(ipText)) {
+            fetchedIp = ipText;
+          }
+        } catch {
+          // Device is mid-restart or briefly unreachable; keep retrying.
+        }
+      }
+
+      if (fetchedIp) {
+        setDeviceIp(fetchedIp);
+        setNotice({
+          type: "success",
+          message: `Wi-Fi credentials saved. Found your Alino at ${fetchedIp} — tap Connect Device to finish registering it.`,
+        });
+      } else {
+        setNotice({
+          type: "success",
+          message: "Wi-Fi credentials were sent over Bluetooth. Enter the device IP manually once it reconnects.",
+        });
+      }
+
+      setSsid("");
+      setPassword("");
+    } catch (error) {
+      setNotice({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unable to pair your Alino device over Bluetooth.",
+      });
+    } finally {
+      setPairing(false);
+    }
+  };
+
+  const handleTestMotor = async () => {
+    setMotorTesting(true);
+    setNotice({ type: "info", message: "Testing the vibration motor..." });
+
+    try {
+      const result = await alinoDevice.testMotor();
+      setNotice({ type: result.success ? "success" : "error", message: result.message });
+    } catch (error) {
+      setNotice({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unable to trigger the motor.",
+      });
+    } finally {
+      setMotorTesting(false);
     }
   };
 
@@ -574,11 +677,60 @@ function DeviceSetup({
       <div className="card connect-card">
         <div className="connect-icon"><Wifi size={28} /></div>
         <h3>Connect Device</h3>
-        <p>Turn on your Alino, then connect your phone to the Alino Wi-Fi network.</p>
-        <button className="btn-primary" type="button" onClick={handleConnect} disabled={connecting}>
-          {connecting ? <LoaderCircle className="spin" size={18} /> : <Smartphone size={18} />}
-          {connecting ? "Connecting..." : "Connect Device"}
-        </button>
+        <p>Make sure your Alino device and this computer are on the same Wi-Fi network, then enter the device IP and click Connect.</p>
+        <div className="inline-form" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label className="simple-label" style={{ flex: 1, minWidth: 160 }}>
+            Device IP
+            <input
+              className="simple-input"
+              value={deviceIp}
+              onChange={(e) => setDeviceIp(e.target.value)}
+              placeholder="192.168.x.x"
+            />
+          </label>
+          <button className="btn-primary" type="button" onClick={handleConnect} disabled={connecting}>
+            {connecting ? <LoaderCircle className="spin" size={18} /> : <Smartphone size={18} />}
+            {connecting ? "Connecting..." : "Connect Device"}
+          </button>
+          <button className="btn-secondary" type="button" onClick={handleTestMotor} disabled={motorTesting}>
+            {motorTesting ? <LoaderCircle className="spin" size={18} /> : <Vibrate size={18} />}
+            {motorTesting ? "Testing..." : "Test motor"}
+          </button>
+          <Link to="/calibration" className="btn-secondary" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <Target size={18} />
+            Calibrate / Recalibrate
+          </Link>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="connect-icon"><Bluetooth size={24} /></div>
+        <h3>Bluetooth Pairing</h3>
+        <p>Pair your Alino over Bluetooth on first boot so you can enter the Wi-Fi details without opening the setup page.</p>
+        <form className="form-grid" onSubmit={handlePairViaBluetooth}>
+          <label className="simple-label">
+            Wi-Fi SSID
+            <input className="simple-input" name="ssid" value={ssid} onChange={(event) => setSsid(event.target.value)} required />
+          </label>
+          <label className="simple-label">
+            Wi-Fi Password
+            <input className="simple-input" name="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+          </label>
+          <label className="simple-label">
+            App Server IP (optional)
+            <input
+              className="simple-input"
+              name="apiHost"
+              placeholder="e.g. 172.17.93.100"
+              value={apiHost}
+              onChange={(event) => setApiHost(event.target.value)}
+            />
+          </label>
+          <button className="btn-primary" type="submit" disabled={pairing}>
+            {pairing ? <LoaderCircle className="spin" size={18} /> : <Bluetooth size={18} />}
+            {pairing ? "Pairing..." : "Pair via Bluetooth"}
+          </button>
+        </form>
       </div>
 
       {/* Device list */}
@@ -586,20 +738,55 @@ function DeviceSetup({
         <h3>Your Devices</h3>
         <div className="device-list">
           {devices.map((device) => (
-            <button
+            <div
               className={`device-row ${device.id === activeDeviceId ? "selected" : ""}`}
               key={device.id}
-              type="button"
-              onClick={() => onSelectDevice(device.id)}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
             >
-              <span className="device-info">
-                <span className="device-name">{device.deviceName}</span>
-                <span className="device-friendly-status">
-                  {device.id === activeDeviceId ? "Connected and selected" : "Tap to select"}
+              <button
+                type="button"
+                onClick={() => onSelectDevice(device.id)}
+                style={{ background: "none", border: 0, flex: 1, textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between" }}
+              >
+                <span className="device-info">
+                  <span className="device-name">{device.deviceName}</span>
+                  <span className="device-friendly-status">
+                    {device.id === activeDeviceId ? "Connected and selected" : "Tap to select"}
+                    {device.deviceIp ? ` · ${device.deviceIp}` : ""}
+                  </span>
                 </span>
-              </span>
-              {device.id === activeDeviceId && <CheckCircle2 size={20} />}
-            </button>
+                {device.id === activeDeviceId && <CheckCircle2 size={20} />}
+              </button>
+              <button
+                className="btn-icon"
+                type="button"
+                title="Remove device"
+                disabled={removingId === device.id}
+                onClick={async () => {
+                  if (!window.confirm(`Remove "${device.deviceName}" from your account?`)) {
+                    return;
+                  }
+                  setRemovingId(device.id);
+                  try {
+                    await api.devices.remove(device.id);
+                    if (device.id === activeDeviceId) {
+                      onSelectDevice("");
+                    }
+                    await onRefresh();
+                    setNotice({ type: "success", message: `${device.deviceName} was removed.` });
+                  } catch (error) {
+                    setNotice({
+                      type: "error",
+                      message: error instanceof Error ? error.message : "Unable to remove device.",
+                    });
+                  } finally {
+                    setRemovingId(null);
+                  }
+                }}
+              >
+                {removingId === device.id ? <LoaderCircle className="spin" size={16} /> : "Remove"}
+              </button>
+            </div>
           ))}
           {devices.length === 0 && <p style={{ color: "var(--text-muted)", fontSize: 14 }}>No devices registered yet.</p>}
         </div>
@@ -714,34 +901,47 @@ function CalibrationScreen({ activeDevice }: { activeDevice?: Device }) {
 /* ══════════════════════════════════════════════════
    LIVE STATUS
    ══════════════════════════════════════════════════ */
-function LiveStatusScreen({ activeDevice }: { activeDevice?: Device }) {
+function LiveStatusScreen({
+  activeDevice,
+  latestReading,
+  todayReadings,
+  onRefresh,
+}: {
+  activeDevice?: Device;
+  latestReading: PostureReading | null;
+  todayReadings: PostureReading[];
+  onRefresh: () => Promise<void>;
+}) {
   const { notice, run } = useNotice();
-  const [latest, setLatest] = useState<PostureReading | null>(null);
-  const [today, setToday] = useState<PostureReading[]>([]);
+  const [deviceInfo, setDeviceInfo] = useState<AlinoDeviceInfo | null>(null);
 
-  const loadReadings = async () => {
-    if (!activeDevice) {
+  useEffect(() => {
+    if (!activeDevice?.deviceIp) {
+      setDeviceInfo(null);
       return;
     }
 
-    const results = await Promise.allSettled([api.readings.latest(activeDevice.id), api.readings.today(activeDevice.id)]);
+    let cancelled = false;
+    setAlinoDeviceUrl(activeDevice.deviceIp);
 
-    if (results[0].status === "fulfilled") {
-      setLatest(results[0].value.reading);
-    } else {
-      setLatest(null);
-    }
+    const poll = () => {
+      alinoDevice
+        .info()
+        .then((info) => {
+          if (!cancelled) setDeviceInfo(info);
+        })
+        .catch(() => {
+          if (!cancelled) setDeviceInfo(null);
+        });
+    };
 
-    if (results[1].status === "fulfilled") {
-      setToday(results[1].value.readings);
-    } else {
-      setToday([]);
-    }
-  };
-
-  useEffect(() => {
-    loadReadings();
-  }, [activeDevice?.id]);
+    poll();
+    const intervalId = window.setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeDevice?.deviceIp]);
 
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -757,7 +957,7 @@ function LiveStatusScreen({ activeDevice }: { activeDevice?: Device }) {
         postureStatus: textValue(form.get("postureStatus")) as PostureStatus,
         recordedAt: new Date().toISOString(),
       });
-      await loadReadings();
+      await onRefresh();
     }, "Test posture reading saved");
   };
 
@@ -776,12 +976,35 @@ function LiveStatusScreen({ activeDevice }: { activeDevice?: Device }) {
 
       {/* Live status */}
       <div className="card">
-        {latest ? (
-          <PostureStatusDisplay reading={latest} />
+        {latestReading ? (
+          <PostureStatusDisplay reading={latestReading} />
         ) : (
           <p style={{ color: "var(--text-muted)", textAlign: "center", padding: "24px" }}>No data yet.</p>
         )}
       </div>
+
+      {/* Live device telemetry: battery + bend direction, straight from the device */}
+      {deviceInfo && (
+        <div className="metric-row">
+          <MetricCard
+            label="Battery"
+            value={typeof deviceInfo.batteryPercent === "number" ? `${deviceInfo.batteryPercent}%` : "—"}
+            accent={
+              typeof deviceInfo.batteryPercent === "number" && deviceInfo.batteryPercent <= 20 ? "orange" : "green"
+            }
+          />
+          <MetricCard
+            label="Battery Voltage"
+            value={typeof deviceInfo.batteryVoltage === "number" ? `${deviceInfo.batteryVoltage.toFixed(2)}V` : "—"}
+            accent="gray"
+          />
+          <MetricCard
+            label="Bend Direction"
+            value={deviceInfo.bendDirection && deviceInfo.bendDirection !== "none" ? deviceInfo.bendDirection : "Good"}
+            accent={deviceInfo.bendDirection && deviceInfo.bendDirection !== "none" ? "orange" : "green"}
+          />
+        </div>
+      )}
 
       {/* Add test reading */}
       <div className="card">
@@ -809,7 +1032,7 @@ function LiveStatusScreen({ activeDevice }: { activeDevice?: Device }) {
       {/* Today's readings chart */}
       <div className="card">
         <h3>Today's Readings</h3>
-        <ReadingChart readings={today} />
+        <ReadingChart readings={todayReadings} />
       </div>
     </section>
   );
@@ -1081,13 +1304,13 @@ function SettingsScreen({ activeDevice }: { activeDevice?: Device }) {
               className="simple-input"
               name="vibrationDelaySeconds"
               type="number"
-              min={0}
-              defaultValue={settings?.vibrationDelaySeconds ?? 60}
+              min={1}
+              defaultValue={settings?.vibrationDelaySeconds ?? 5}
             />
           </label>
           <div className="toggle-row">
             <input name="vibrationEnabled" type="checkbox" defaultChecked={settings?.vibrationEnabled ?? true} />
-            Vibration enabled
+            Do not disturb
           </div>
           <button className="btn-primary" type="submit">
             <Settings size={18} />
@@ -1152,6 +1375,9 @@ export default function App() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeDeviceId, setActiveDeviceId] = useState(() => localStorage.getItem(ACTIVE_DEVICE_KEY) || "");
   const [booting, setBooting] = useState(true);
+  const [latestReading, setLatestReading] = useState<PostureReading | null>(null);
+  const [progressSummary, setProgressSummary] = useState<ProgressSummary | null>(null);
+  const [todayReadings, setTodayReadings] = useState<PostureReading[]>([]);
 
   const activeDevice = useMemo(
     () => devices.find((device) => device.id === activeDeviceId),
@@ -1193,6 +1419,70 @@ export default function App() {
       })
       .finally(() => setBooting(false));
   }, []);
+
+  const refreshLiveData = async () => {
+    if (!activeDevice?.id) {
+      setLatestReading(null);
+      setProgressSummary(null);
+      setTodayReadings([]);
+      return;
+    }
+
+    const [latestResult, progressResult, todayResult] = await Promise.allSettled([
+      api.readings.latest(activeDevice.id),
+      api.progress.daily(activeDevice.id, todayKey()),
+      api.readings.today(activeDevice.id),
+    ]);
+
+    if (latestResult.status === "fulfilled") {
+      setLatestReading(latestResult.value.reading);
+    } else {
+      setLatestReading(null);
+    }
+
+    if (progressResult.status === "fulfilled") {
+      setProgressSummary(progressResult.value.progress);
+    } else {
+      setProgressSummary(null);
+    }
+
+    if (todayResult.status === "fulfilled") {
+      setTodayReadings(todayResult.value.readings);
+    } else {
+      setTodayReadings([]);
+    }
+  };
+
+  useEffect(() => {
+    if (!activeDevice?.id) {
+      return;
+    }
+
+    void refreshLiveData();
+
+    const intervalId = window.setInterval(() => {
+      void refreshLiveData();
+    }, 5000);
+
+    const onFocus = () => {
+      void refreshLiveData();
+    };
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        void refreshLiveData();
+      }
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [activeDevice?.id]);
 
   const handleAuth = async (nextUser: ApiUser, token: string) => {
     tokenStore.set(token);
@@ -1236,7 +1526,10 @@ export default function App() {
       onLogout={handleLogout}
     >
       <Routes>
-        <Route path="/dashboard" element={<Dashboard devices={devices} activeDevice={activeDevice} />} />
+        <Route
+          path="/dashboard"
+          element={<Dashboard devices={devices} activeDevice={activeDevice} latestReading={latestReading} progressSummary={progressSummary} />}
+        />
         <Route
           path="/devices"
           element={
@@ -1249,7 +1542,17 @@ export default function App() {
           }
         />
         <Route path="/calibration" element={<CalibrationScreen activeDevice={activeDevice} />} />
-        <Route path="/live" element={<LiveStatusScreen activeDevice={activeDevice} />} />
+        <Route
+          path="/live"
+          element={
+            <LiveStatusScreen
+              activeDevice={activeDevice}
+              latestReading={latestReading}
+              todayReadings={todayReadings}
+              onRefresh={refreshLiveData}
+            />
+          }
+        />
         <Route path="/progress/daily" element={<DailyProgressScreen activeDevice={activeDevice} />} />
         <Route path="/progress/monthly" element={<MonthlyProgressScreen activeDevice={activeDevice} />} />
         <Route path="/settings" element={<SettingsScreen activeDevice={activeDevice} />} />

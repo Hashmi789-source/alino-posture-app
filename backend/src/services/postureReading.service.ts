@@ -44,22 +44,59 @@ const toPostureReadingResponse = (reading: PostureReadingRow) => ({
   createdAt: reading.created_at,
 });
 
+const ensureUserRecord = async (userId: string) => {
+  const db = requireSupabase();
+
+  const { data: existingUser, error: lookupError } = await db.from("users").select("id").eq("id", userId).maybeSingle();
+
+  if (lookupError) {
+    throw new AppError(lookupError.message, 500);
+  }
+
+  if (existingUser) {
+    return;
+  }
+
+  const { error: createError } = await db.from("users").insert({
+    id: userId,
+    name: "Device User",
+    email: `device-${userId.replace(/-/g, "")}@alino.local`,
+    password_hash: "device-placeholder",
+  });
+
+  if (createError) {
+    throw new AppError(createError.message, 500);
+  }
+};
+
 const verifyDeviceOwnership = async (userId: string, deviceId: string) => {
   const db = requireSupabase();
 
-  const { data: device, error } = await db
-    .from("devices")
-    .select("id")
-    .eq("id", deviceId)
-    .eq("user_id", userId)
-    .maybeSingle();
+  await ensureUserRecord(userId);
+
+  const { data: device, error } = await db.from("devices").select("id, user_id").eq("id", deviceId).maybeSingle();
 
   if (error) {
     throw new AppError(error.message, 500);
   }
 
-  if (!device) {
-    throw new AppError("Device not found", 404);
+  if (device) {
+    if (device.user_id !== userId) {
+      throw new AppError("Device not found", 404);
+    }
+    return;
+  }
+
+  const { error: createError } = await db.from("devices").insert({
+    id: deviceId,
+    user_id: userId,
+    device_name: "Firmware Device",
+    device_uid: deviceId,
+    device_ip: null,
+  });
+
+  if (createError) {
+    throw new AppError(createError.message, 500);
   }
 };
 

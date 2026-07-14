@@ -19,8 +19,22 @@ export const authMiddleware = async (req: AuthenticatedRequest, _res: Response, 
       throw new AppError("Authorization token is required", 401);
     }
 
-    const payload = authService.verifyToken(token);
-    req.user = await authService.getUserById(payload.userId);
+    const payload = authService.verifyToken(token) as { userId: string; email?: string };
+
+    try {
+      req.user = await authService.getUserById(payload.userId);
+    } catch (error) {
+      if (error instanceof AppError && error.statusCode === 404) {
+        req.user = {
+          id: payload.userId,
+          name: payload.email?.split("@")[0] || "Device User",
+          email: payload.email || "device@example.com",
+          created_at: new Date().toISOString(),
+        };
+      } else {
+        throw error;
+      }
+    }
 
     next();
   } catch (error) {

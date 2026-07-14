@@ -76,7 +76,12 @@ type ApiResponse<T> = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api";
-const ALINO_DEVICE_URL = "http://192.168.4.1";
+let alinoDeviceBaseUrl = "http://192.168.4.1";
+export const setAlinoDeviceUrl = (ip: string) => {
+  // AP mode uses port 80, STA mode (same network) uses port 8080
+  const port = ip === "192.168.4.1" ? "" : ":8080";
+  alinoDeviceBaseUrl = `http://${ip}${port}`;
+};
 const TOKEN_KEY = "alino_auth_token";
 
 export type AlinoDeviceInfo = {
@@ -85,12 +90,22 @@ export type AlinoDeviceInfo = {
   firmwareVersion: string;
   sensorReady: boolean;
   calibrated: boolean;
+  deviceIp?: string;
+  batteryVoltage?: number;
+  batteryPercent?: number;
+  angle?: number;
+  bendDirection?: "none" | "forward" | "backward" | "left" | "right";
 };
 
 export type AlinoCalibrationResult = {
   success: boolean;
   baselineAngle: number;
   thresholdAngle: number;
+  message: string;
+};
+
+export type AlinoActionResult = {
+  success: boolean;
   message: string;
 };
 
@@ -122,6 +137,10 @@ async function request<T>(path: string, options: RequestInit = {}) {
     headers.set("Content-Type", "application/json");
   }
 
+  headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  headers.set("Pragma", "no-cache");
+  headers.set("Expires", "0");
+
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
@@ -129,6 +148,7 @@ async function request<T>(path: string, options: RequestInit = {}) {
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
+      cache: "no-store",
       headers,
     });
     const payload = (await response.json().catch(() => ({
@@ -157,7 +177,7 @@ async function requestDevice<T>(path: string, options: RequestInit = {}) {
   const timeout = window.setTimeout(() => controller.abort(), 8000);
 
   try {
-    const response = await fetch(`${ALINO_DEVICE_URL}${path}`, {
+    const response = await fetch(`${alinoDeviceBaseUrl}${path}`, {
       ...options,
       headers: { "Content-Type": "application/json", ...options.headers },
       signal: controller.signal,
@@ -166,7 +186,7 @@ async function requestDevice<T>(path: string, options: RequestInit = {}) {
     if (!response.ok) throw new Error(payload.message || "Alino device request failed");
     return payload as T;
   } catch {
-    throw new Error("Unable to reach your Alino device. Please connect your phone to the Alino Wi-Fi and try again.");
+    throw new Error(`Unable to reach your Alino device at ${alinoDeviceBaseUrl}. Make sure the IP is correct and both devices are on the same network.`);
   } finally {
     window.clearTimeout(timeout);
   }
@@ -178,6 +198,18 @@ export const alinoDevice = {
   },
   calibrate() {
     return requestDevice<AlinoCalibrationResult>("/api/calibrate", { method: "POST" });
+  },
+  testMotor() {
+    return requestDevice<AlinoActionResult>("/api/device/test-motor", { method: "POST" });
+  },
+  stopMotor() {
+    return requestDevice<AlinoActionResult>("/api/device/stop-motor", { method: "POST" });
+  },
+  provision(input: { ssid: string; password: string; apiHost?: string }) {
+    return requestDevice<AlinoActionResult>("/api/device/provision", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   },
 };
 
