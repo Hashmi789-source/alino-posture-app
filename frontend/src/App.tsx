@@ -527,7 +527,71 @@ function DeviceSetup({
   const [ssid, setSsid] = useState("");
   const [password, setPassword] = useState("");
   const [apiHost, setApiHost] = useState("");
-  const [deviceIp, setDeviceIp] = useState("192.168.4.1");
+  const [deviceIp, setDeviceIp] = useState("");
+  const [detectingIp, setDetectingIp] = useState(false);
+
+  const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  const PROVISION_CHAR_UUID = "beb5483e-36e7-4688-bc5e-8f4f4f4f4f4f";
+  const IP_CHAR_UUID = "0d6a1b2e-7f0e-4a2a-9f0a-6b0f7e9c2a10";
+
+  const getBluetoothApi = () => {
+    const bluetoothApi = navigator as Navigator & {
+      bluetooth?: {
+        requestDevice(options: {
+          filters?: Array<{ namePrefix?: string }>;
+          optionalServices?: string[];
+        }): Promise<any>;
+      };
+    };
+    return bluetoothApi.bluetooth;
+  };
+
+  // Reads the device's current IP straight over Bluetooth - no manual typing.
+  // Works any time the device is already on Wi-Fi (not just right after
+  // provisioning), so it doubles as a "find my device" button later too.
+  const handleDetectIp = async () => {
+    const bluetooth = getBluetoothApi();
+    if (!bluetooth) {
+      setNotice({ type: "error", message: "Web Bluetooth is not supported in this browser." });
+      return;
+    }
+
+    setDetectingIp(true);
+    setNotice({ type: "info", message: "Looking for your Alino device over Bluetooth..." });
+
+    try {
+      const device = await bluetooth.requestDevice({
+        filters: [{ namePrefix: "PosturePro-" }],
+        optionalServices: [SERVICE_UUID],
+      });
+      const server = await device.gatt?.connect();
+      if (!server) {
+        throw new Error("Bluetooth GATT server was not available.");
+      }
+
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      const ipCharacteristic = await service.getCharacteristic(IP_CHAR_UUID);
+      const value = await ipCharacteristic.readValue();
+      const ipText = new TextDecoder().decode(value).trim();
+
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(ipText)) {
+        setDeviceIp(ipText);
+        setNotice({ type: "success", message: `Found your Alino at ${ipText}. Tap Connect Device to finish.` });
+      } else {
+        setNotice({
+          type: "error",
+          message: "Your Alino hasn't connected to Wi-Fi yet. Pair it below first, then try again.",
+        });
+      }
+    } catch (error) {
+      setNotice({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unable to reach your Alino device over Bluetooth.",
+      });
+    } finally {
+      setDetectingIp(false);
+    }
+  };
 
   const handleConnect = async () => {
     setConnecting(true);
@@ -560,29 +624,18 @@ function DeviceSetup({
 
   const handlePairViaBluetooth = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const bluetoothApi = navigator as Navigator & {
-      bluetooth?: {
-        requestDevice(options: {
-          filters?: Array<{ namePrefix?: string }>;
-          optionalServices?: string[];
-        }): Promise<any>;
-      };
-    };
+    const bluetooth = getBluetoothApi();
 
-    if (!bluetoothApi.bluetooth) {
+    if (!bluetooth) {
       setNotice({ type: "error", message: "Web Bluetooth is not supported in this browser." });
       return;
     }
-
-    const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-    const PROVISION_CHAR_UUID = "beb5483e-36e7-4688-bc5e-8f4f4f4f4f4f";
-    const IP_CHAR_UUID = "0d6a1b2e-7f0e-4a2a-9f0a-6b0f7e9c2a10";
 
     setPairing(true);
     setNotice({ type: "info", message: "Searching for your Alino device over Bluetooth..." });
 
     try {
-      const device = await bluetoothApi.bluetooth.requestDevice({
+      const device = await bluetooth.requestDevice({
         filters: [{ namePrefix: "PosturePro-" }],
         optionalServices: [SERVICE_UUID],
       });
@@ -677,18 +730,17 @@ function DeviceSetup({
       <div className="card connect-card">
         <div className="connect-icon"><Wifi size={28} /></div>
         <h3>Connect Device</h3>
-        <p>Make sure your Alino device and this computer are on the same Wi-Fi network, then enter the device IP and click Connect.</p>
-        <div className="inline-form" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <label className="simple-label" style={{ flex: 1, minWidth: 160 }}>
-            Device IP
-            <input
-              className="simple-input"
-              value={deviceIp}
-              onChange={(e) => setDeviceIp(e.target.value)}
-              placeholder="192.168.x.x"
-            />
-          </label>
-          <button className="btn-primary" type="button" onClick={handleConnect} disabled={connecting}>
+        <p>
+          {deviceIp
+            ? `Found your Alino at ${deviceIp}. Tap Connect Device to finish.`
+            : "Tap \"Find via Bluetooth\" to locate your Alino automatically - no need to type its IP address."}
+        </p>
+        <div className="inline-form" style={{ gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+          <button className="btn-secondary" type="button" onClick={handleDetectIp} disabled={detectingIp}>
+            {detectingIp ? <LoaderCircle className="spin" size={18} /> : <Bluetooth size={18} />}
+            {detectingIp ? "Searching..." : "Find via Bluetooth"}
+          </button>
+          <button className="btn-primary" type="button" onClick={handleConnect} disabled={connecting || !deviceIp}>
             {connecting ? <LoaderCircle className="spin" size={18} /> : <Smartphone size={18} />}
             {connecting ? "Connecting..." : "Connect Device"}
           </button>
@@ -707,20 +759,36 @@ function DeviceSetup({
         <div className="connect-icon"><Bluetooth size={24} /></div>
         <h3>Bluetooth Pairing</h3>
         <p>Pair your Alino over Bluetooth on first boot so you can enter the Wi-Fi details without opening the setup page.</p>
-        <form className="form-grid" onSubmit={handlePairViaBluetooth}>
+        <form className="form-grid" onSubmit={handlePairViaBluetooth} autoComplete="off">
           <label className="simple-label">
             Wi-Fi SSID
-            <input className="simple-input" name="ssid" value={ssid} onChange={(event) => setSsid(event.target.value)} required />
+            <input
+              className="simple-input"
+              name="wifiSsid"
+              autoComplete="off"
+              value={ssid}
+              onChange={(event) => setSsid(event.target.value)}
+              required
+            />
           </label>
           <label className="simple-label">
             Wi-Fi Password
-            <input className="simple-input" name="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+            <input
+              className="simple-input"
+              name="wifiPassword"
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
           </label>
           <label className="simple-label">
             App Server IP (optional)
             <input
               className="simple-input"
               name="apiHost"
+              autoComplete="off"
               placeholder="e.g. 172.17.93.100"
               value={apiHost}
               onChange={(event) => setApiHost(event.target.value)}
@@ -983,7 +1051,7 @@ function LiveStatusScreen({
         )}
       </div>
 
-      {/* Live device telemetry: battery + bend direction, straight from the device */}
+      {/* Live device telemetry: battery, straight from the device */}
       {deviceInfo && (
         <div className="metric-row">
           <MetricCard
@@ -997,11 +1065,6 @@ function LiveStatusScreen({
             label="Battery Voltage"
             value={typeof deviceInfo.batteryVoltage === "number" ? `${deviceInfo.batteryVoltage.toFixed(2)}V` : "—"}
             accent="gray"
-          />
-          <MetricCard
-            label="Bend Direction"
-            value={deviceInfo.bendDirection && deviceInfo.bendDirection !== "none" ? deviceInfo.bendDirection : "Good"}
-            accent={deviceInfo.bendDirection && deviceInfo.bendDirection !== "none" ? "orange" : "green"}
           />
         </div>
       )}
@@ -1253,7 +1316,9 @@ function SettingsScreen({ activeDevice }: { activeDevice?: Device }) {
         sensitivity: textValue(form.get("sensitivity")) as DeviceSettings["sensitivity"],
         thresholdAngle: numberValue(form.get("thresholdAngle")),
         vibrationDelaySeconds: numberValue(form.get("vibrationDelaySeconds")),
-        vibrationEnabled: form.get("vibrationEnabled") === "on",
+        // The checkbox is labeled "Do not disturb", so checked means
+        // vibration should be OFF - i.e. vibrationEnabled = false.
+        vibrationEnabled: form.get("doNotDisturb") !== "on",
       });
       setSettings(result.settings);
     }, "Device settings saved");
@@ -1274,14 +1339,13 @@ function SettingsScreen({ activeDevice }: { activeDevice?: Device }) {
 
       <div className="card">
         <h3>Device Settings</h3>
-        <form className="settings-grid" onSubmit={handleSave}>
+        <form className="settings-grid" onSubmit={handleSave} key={settings?.id || "new"}>
           <label className="simple-label">
             Sensitivity
             <select
               className="simple-select"
               name="sensitivity"
               defaultValue={settings?.sensitivity || "normal"}
-              key={settings?.id || "new"}
             >
               <option value="low">Low</option>
               <option value="normal">Normal</option>
@@ -1309,8 +1373,8 @@ function SettingsScreen({ activeDevice }: { activeDevice?: Device }) {
             />
           </label>
           <div className="toggle-row">
-            <input name="vibrationEnabled" type="checkbox" defaultChecked={settings?.vibrationEnabled ?? true} />
-            Do not disturb
+            <input name="doNotDisturb" type="checkbox" defaultChecked={!(settings?.vibrationEnabled ?? true)} />
+            Do not disturb (mutes the vibration alert)
           </div>
           <button className="btn-primary" type="submit">
             <Settings size={18} />

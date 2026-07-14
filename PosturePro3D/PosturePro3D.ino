@@ -42,11 +42,16 @@ const char *SETUP_AP_PASSWORD = "setup1234";
 const float BATTERY_DIVIDER_RATIO = 2.0f;
 // Tweak this if your measured voltage doesn't match a multimeter reading.
 // To calibrate: measure the real battery voltage with a multimeter, read the
-// value this code reports, then set:
-//   BATTERY_CALIBRATION_FACTOR = (multimeter voltage) / (reported voltage)
-float BATTERY_CALIBRATION_FACTOR = 1.0f;
-const float BATTERY_FULL_VOLTAGE = 4.20f;   // ~100%
-const float BATTERY_EMPTY_VOLTAGE = 3.30f;  // ~0% (safe cutoff for single-cell LiPo)
+// "raw(no cal)" value this code prints to Serial, then set:
+//   BATTERY_CALIBRATION_FACTOR = (multimeter voltage) / (raw(no cal) voltage)
+// Calibrated from a real reading at full charge: multimeter said 3.77V while
+// raw(no cal) read 3.84V, so factor = 3.77 / 3.84.
+float BATTERY_CALIBRATION_FACTOR = 0.9818f;
+// This pack's charger tops it out at ~3.77V rather than the usual 4.2V for a
+// bare single-cell LiPo (measured with a multimeter at full charge), so use
+// that as the 100% reference instead of the generic LiPo value.
+const float BATTERY_FULL_VOLTAGE = 3.77f;   // ~100% (measured at full charge)
+const float BATTERY_EMPTY_VOLTAGE = 3.30f;  // ~0% (safe cutoff - re-check against your charger/BMS's actual low-voltage cutoff)
 const unsigned long BATTERY_SAMPLE_INTERVAL_MS = 10000;
 
 const byte DNS_PORT = 53;
@@ -604,6 +609,19 @@ void updateBatteryReading() {
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
   batteryPercent = (int)(percent + 0.5f);
+
+  // Handy for recalibrating: compare "reported" to a multimeter reading on
+  // the battery terminals, then set BATTERY_CALIBRATION_FACTOR =
+  // multimeter_voltage / reported_voltage (using the value from BEFORE this
+  // calibration factor was applied, i.e. pinMilliVolts/1000 * BATTERY_DIVIDER_RATIO).
+  Serial.print("Battery: pin=");
+  Serial.print(pinMilliVolts, 1);
+  Serial.print("mV, raw(no cal)=");
+  Serial.print((pinMilliVolts / 1000.0f) * BATTERY_DIVIDER_RATIO, 2);
+  Serial.print("V, reported=");
+  Serial.print(batteryVoltage, 2);
+  Serial.print("V, percent=");
+  Serial.println(batteryPercent);
 }
 
 bool extractJsonNumber(const String &payload, const char *key, float &value) {
@@ -728,6 +746,7 @@ bool fetchDeviceSettings() {
 
   float fetchedDelaySeconds = 5.0f;
   bool fetchedVibrationEnabled = true;
+  float fetchedThresholdAngle = thresholdAngle;
 
   if (!extractJsonNumber(responseBody, "\"vibrationDelaySeconds\":", fetchedDelaySeconds)) {
     fetchedDelaySeconds = 5.0f;
@@ -737,8 +756,15 @@ bool fetchDeviceSettings() {
     fetchedVibrationEnabled = true;
   }
 
+  // Device settings' thresholdAngle is the one the Settings page in the app
+  // actually edits. Apply it here so it takes effect (previously the
+  // firmware only ever looked at the calibration's threshold, so this
+  // field in the app had no effect on the device at all).
+  extractJsonNumber(responseBody, "\"thresholdAngle\":", fetchedThresholdAngle);
+
   triggerDelayMs = max(1000ul, (unsigned long)max(1.0f, fetchedDelaySeconds) * 1000ul);
   vibrationEnabled = fetchedVibrationEnabled;
+  thresholdAngle = fetchedThresholdAngle;
   return true;
 }
 
@@ -876,8 +902,16 @@ void updatePostureState(float measuredAngle) {
     if (currentAngleDelta >= triggerAngle) {
       triggerHoldMs += SENSOR_INTERVAL_MS;
     } else {
-      triggerHoldMs -= SENSOR_INTERVAL_MS * 2;
-      if (triggerHoldMs < 0) {
+      // triggerHoldMs is unsigned, so subtracting past 0 wraps around to a
+      // huge number instead of going negative - checking "< 0" afterward
+      // never catches it. Check the size BEFORE subtracting instead. This
+      // was the actual cause of posture reading as "bad" immediately after
+      // calibrating: with triggerHoldMs already at 0, the old code
+      // underflowed on the very first good-posture tick, which then looked
+      // like it had already exceeded the vibration delay.
+      if (triggerHoldMs > SENSOR_INTERVAL_MS * 2) {
+        triggerHoldMs -= SENSOR_INTERVAL_MS * 2;
+      } else {
         triggerHoldMs = 0;
       }
     }
@@ -898,8 +932,10 @@ void updatePostureState(float measuredAngle) {
     if (currentAngleDelta <= releaseAngle) {
       releaseHoldMs += SENSOR_INTERVAL_MS;
     } else {
-      releaseHoldMs -= SENSOR_INTERVAL_MS * 2;
-      if (releaseHoldMs < 0) {
+      // Same underflow fix as triggerHoldMs above.
+      if (releaseHoldMs > SENSOR_INTERVAL_MS * 2) {
+        releaseHoldMs -= SENSOR_INTERVAL_MS * 2;
+      } else {
         releaseHoldMs = 0;
       }
     }
@@ -912,17 +948,13 @@ void updatePostureState(float measuredAngle) {
     }
   }
 
-  // Whichever axis (front/back vs left/right) has drifted further from the
-  // calibrated baseline decides which way the person is bending.
-  if (isPostureBad) {
-    if (fabs(deltaPitch) >= fabs(deltaRoll)) {
-      bendDirection = deltaPitch >= 0 ? "forward" : "backward";
-    } else {
-      bendDirection = deltaRoll >= 0 ? "right" : "left";
-    }
-  } else {
-    bendDirection = "none";
-  }
+  // Bend direction reporting disabled per request - its baseline (pitch/roll)
+  // was only ever seeded from whatever position the sensor happened to be in
+  // at the first calibration fetch after boot, not from the actual
+  // calibration posture, which made the forward/backward/left/right label
+  // unreliable. Always report "none"; the app already falls back to showing
+  // "Good" whenever bendDirection is "none".
+  bendDirection = "none";
 
   if (isPostureBad) {
     if (!vibrationEnabled) {
@@ -1216,7 +1248,15 @@ void loop() {
   }
 
   if (wifiReady && timeReady) {
-    if ((millis() - lastCalibrationSyncAt) >= CALIBRATION_REFRESH_INTERVAL_MS) {
+    // Only pull calibration from the backend on this timer if we don't
+    // already have a good local calibration. Calibrating from the app hits
+    // this device directly and takes effect immediately, so periodically
+    // re-fetching "the active calibration" after that point served no
+    // purpose - it could only ever overwrite a fresh, correct baseline with
+    // a stale one (e.g. if the post-calibration push to the backend lagged
+    // behind this refresh timer), which is what was causing good posture to
+    // suddenly read as bad ~60s after calibrating.
+    if (!isCalibrated && (millis() - lastCalibrationSyncAt) >= CALIBRATION_REFRESH_INTERVAL_MS) {
       lastCalibrationSyncAt = millis();
       fetchActiveCalibration();
     }
